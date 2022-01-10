@@ -54,7 +54,8 @@ utility関数
 ガウス過程の事後分布 $p(\mathbf{y}|\mathbf{X}, \mathcal{D})$ はパラメータ既知の正規分布なので、サンプル$\mathbf{y}^k\sim p(\mathbf{y}|\mathbf{X}, \mathcal{D})$を生成してMonte Carlo近似できます。
 $$\mathcal{L}(\mathbf{X}) \approx \mathcal{L}_m(\mathbf{X}) := \frac{1}{m}\sum_{k=1}^m{l(\mathbf{y^k})}$$
 
-この近似を用いて獲得関数の勾配を求めるには、微分と期待値（積分）の交換が成り立つ必要があります。
+勾配法で最適な入力$\mathbf{X}$を決めるには、獲得関数の勾配が必要です。
+上記の近似から獲得関数の勾配を求めるには、微分と期待値（積分）の交換 $$\nabla\mathcal{L} = \nabla\mathbb{E}[l(\mathbf{y})]=\mathbb{E}[\nabla l(\mathbf{y})]$$ が成り立つ必要があります。
 
 - 交換 $\nabla\mathbb{E}[l(\mathbf{y})]=\mathbb{E}[\nabla l(\mathbf{y})]$ の成立条件
   - 被積分関数 $l$ が連続
@@ -63,24 +64,77 @@ $$\mathcal{L}(\mathbf{X}) \approx \mathcal{L}_m(\mathbf{X}) := \frac{1}{m}\sum_{
 この条件はGPのカーネル関数に依存しますが、[2回微分可能なカーネルを使用すれば成立することが示されており](https://arxiv.org/abs/1602.05149)、通常用いるMaternカーネルなどでは問題になりません。
 （リンク先の論文の§4.1.で交換可能性が検討されています。）
 
-### 1.2.3. re-parametrization
+上記の交換が成り立てば、獲得関数の勾配もMonte Carlo近似できます。
+$$\nabla\mathcal{L}(\mathbf{X}) \approx \nabla\mathcal{L}_m(\mathbf{X}) := \frac{1}{m}\sum_{k=1}^m{\nabla l(\mathbf{y^k})}$$
 
+以上より、*勾配を計算できる獲得関数の近似* $\mathcal{L}_m(\mathbf{X})$ が得られました。これが**Monte Carlo獲得関数**です。
 
-## 1.3. 非連続性への対応
+## 1.3. BoTorch実装（EIの場合）
+EIを例に、BoTorchでの実装を確認しておきます。EIのMC獲得関数版（qEI）は[`qExperimentImprovement`](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/acquisition/monte_carlo.py#L93)として実装されています。このうち実際の計算を担うのは`forward()`メソッドです。
+
+```py:monte_carlo.py
+    @concatenate_pending_points
+    @t_batch_mode_transform()
+    def forward(self, X: Tensor) -> Tensor:
+        ### (中略)
+        posterior = self.model.posterior(X)
+        samples = self.sampler(posterior)
+        obj = self.objective(samples, X=X)
+        obj = (obj - self.best_f.unsqueeze(-1).to(obj)).clamp_min(0)
+        q_ei = obj.max(dim=-1)[0].mean(dim=0)
+        return q_ei
+```
+
+- 冒頭のデコレータ×２は最適化の際に使用するもので、獲得関数の計算自体には影響しません。
+  - 最初の`concatenate_pending_points`デコレータは、Sequentialモード（後述）で候補点を逐次的に決めていく際、決定済みの候補点を入力に追加する（しかし最適化対象からは外す）ために使用するものです。
+  - 2番目の`t_batch_mode_transform()`は、初期値を変えて複数回の最適化を独立に実行する（t-batch動作）のため、入力データを変換するデコレータです。
+
+- `forward(X)`において、指定した入力点（複数可）`X`に対するqEIを計算します。
+
+  ```py:example
+  gp = SingleTaskGP(train_X, train_Y)
+  ### (中略)：gpのハイパーパラメータは調整済とする
+  best_f = train_Y.max() # 既存点の最大値を求めてqEIに与える 
+  qEI = qExpectedImprovement(gp, best_f)
+  ```
+
+  1. `X`における事後分布 $p(\mathbf{y}|\mathbf{X})$ から、準モンテカルロ法によるサンプリング
+     - `posterior = self.model.posterior(X)`で、与えたGPモデル`gp`の事後分布を取得し、`samples = self.sampler(posterior)`によりサンプリング実行
+     - `self.sampler`は何も指定しなければ`SobolQMCNormalSampler`で512個のサンプルを生成
+  2. 取得サンプル$\{\mathbf{y}^k\}$ を、指定した`objective`で変形
+     - デフォルトでは`squeeze(-1)`するだけの`IdentityMCObjective`
+     - 出力が多変数の場合、出力に重み付けするために使用する？
+  3. qEIのutilityを計算
+     - $ReLU(\mathbf{y} - \alpha)$ を計算
+       - `obj = (obj - self.best_f.unsqueeze(-1).to(obj)).clamp_min(0)`
+     - 候補点$\mathbf{X}$に関する最大値 $\max(ReLU(\mathbf{y} - \alpha))$ を取る
+       - `obj.max(dim=-1)[0]`
+     - サンプル平均 = 期待値のMC近似を求め $\mathcal{L}_m(\mathbf{X}) = \mathbb{E}_{\mathbf{y}}[\max(ReLU(\mathbf{y} - \alpha))]$ を得る
+
+## 1.4. 非連続性への対応
+PI（改善確率）やES（エントロピー探索）系の獲得関数を用いる場合、utilityにHeaviside関数が現れ、被積分関数の非連続性が生じます。
 
 # 2. 勾配法による最適化
+## 2.1. re-parametrizationによる誤差逆伝播
+BoTorchのようにPyTorchを使って勾配 $\nabla{l(\mathbf{y})}=\frac{\partial l}{\partial x}$ を計算するには、誤差逆伝播の途中に挟まる事後分布からのサンプリング $p(\mathbf{y}|\mathbf{X})$が問題になります。
+この問題はVAEなどと同じであり、同様にre-parametrization（再パラメータ化）で解決できます。
+
+![VAEとの比較]()
+
+## 2.2. 
 勾配が分かれば、候補点 $\mathbf{X}$ を最適化することができます。
 ここではBoTorchでの実装を確認しておきます。
 
 # 3. 貪欲法による逐次最適化
 ## 3.1. 貪欲法
+貪欲法とは
 
 - 貪欲法 (greedy) : 複数の候補点を得たい場合に、1点ずつ逐次的に決定していく手法のこと。
 
 [memo]
 - [元論文2](https://proceedings.neurips.cc/paper/2018/hash/498f2c21688f6451d9f5fd09d53edda7-Abstract.html)では、貪欲法による逐次最適化の方が精度に優れる可能性が指摘されている。
   - 獲得関数の多くが劣モジュラ関数となるため、貪欲法で最適化することで最適解付近に到達できることが示されています。
-  - 劣モジュラ関数と最適化については、MLPシリーズの書籍を参照。
+  - 劣モジュラ関数と最適化については、MLPシリーズで入門書籍が出ているので参照してください。
     - [『劣モジュラ最適化と機械学習』](https://www.kspub.co.jp/book/detail/1529090.html)
 
 - BoTorchでは[`optimize_Acqf()`](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/optim/optimize.py#L49)で`sequential=True`とすれば実行できる。

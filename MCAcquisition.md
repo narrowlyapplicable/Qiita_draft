@@ -65,7 +65,8 @@ $$\mathcal{L}(\mathbf{X}) \approx \mathcal{L}_m(\mathbf{X}) := \frac{1}{m}\sum_{
 （リンク先の論文の§4.1.で交換可能性が検討されています。）
 
 上記の交換が成り立てば、獲得関数の勾配もMonte Carlo近似できます。
-$$\nabla\mathcal{L}(\mathbf{X}) \approx \nabla\mathcal{L}_m(\mathbf{X}) := \frac{1}{m}\sum_{k=1}^m{\nabla l(\mathbf{y^k})}$$
+
+$$\nabla\mathcal{L}(\mathbf{X}) \approx \nabla\mathcal{L}_m(\mathbf{X}):= \frac{1}{m}\sum_{k=1}^m{\nabla l(\mathbf{y^k})}$$
 
 以上より、*勾配を計算できる獲得関数の近似* $\mathcal{L}_m(\mathbf{X})$ が得られました。これが**Monte Carlo獲得関数**です。
 
@@ -115,21 +116,52 @@ EIを例に、BoTorchでの実装を確認しておきます。EIのMC獲得関�
 PI（改善確率）やES（エントロピー探索）系の獲得関数を用いる場合、utilityにHeaviside関数が現れ、被積分関数の非連続性が生じます。
 
 # 2. 勾配法による最適化
-## 2.1. re-parametrizationによる誤差逆伝播
-BoTorchのようにPyTorchを使って勾配 $\nabla{l(\mathbf{y})}=\frac{\partial l}{\partial x}$ を計算するには、誤差逆伝播の途中に挟まる事後分布からのサンプリング $p(\mathbf{y}|\mathbf{X})$が問題になります。
-この問題はVAEなどと同じであり、同様にre-parametrization（再パラメータ化）で解決できます。
+## 2.1. re-parametrizationによる勾配評価
+MC獲得関数の勾配
+
+```math
+\nabla{l(\mathbf{y})}=\frac{\partial l(\mathbf{y})}{\partial{\mathbf{y}}} \frac
+{\partial{\mathbf{y}}}{\partial \mathcal{M}(\mathbf{X})} \frac{\partial \mathcal{M}(\mathbf{X})}{\partial \mathbf{X}}
+```
+
+は連鎖律の途中に事後分布 $p(\mathbf{y}|\mathbf{X})=p(\mathbf{y}|\mathcal{M}(\mathbf{X}))$ からのサンプリングを挟むため、勾配の評価にはre-parametrization（再パラメータ化）が必要になります。
+このre-parametrizationはVAEなどと同様です。
 
 ![VAEとの比較]()
+
+決定論的な関数 $\phi$ により、事後分布からのサンプル $\mathbf{y}^k \sim p(\mathbf{y}|\theta)$ を、各次元独立な標準正規分布からのサンプル $\mathbf{z} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})$ で置き換えます。
+
+$$\mathbb{E}_{\mathbf{y}}[l(\mathbf{y})]=\mathbb{E}_{\mathbf{z}}[l(\phi(\mathbf{z}))],\quad\mathbf{y}^k=\phi(\mathbf{z},\theta)$$
+
+ガウス過程であれば事後分布は正規分布となるので、 $\mathbf{\Sigma}$ のコレスキー分解 $\mathbf{L}$ を用いて $\phi(\mathbf{z},\mathcal{M}(\mathbf{X})):=\boldsymbol{\mu}+\mathbf{L}\mathbf{z}$ とすれば、
+
+$$\nabla\mathcal{L}_m(\mathbf{X})=\mathbb{E}_{\mathbf{z}}[\nabla l(\phi(\mathbf{z}))]$$
+
+として計算できます。
 
 ## 2.2. 
 勾配が分かれば、候補点 $\mathbf{X}$ を最適化することができます。
 ここではBoTorchでの実装を確認しておきます。
 
+
 # 3. 貪欲法による逐次最適化
-## 3.1. 貪欲法
-貪欲法とは
+
+元論文２では、複数の候補点 $\mathbf{X}=(\mathbf{x}^1, ..., \mathbf{x}^p)$ を決定する場合において、（同時に最適化するより）1点ずつ逐次的に決定する方が良い性能を示すことが示唆されています。
+これは大半の獲得関数が持つ劣モジュラ性により、貪欲法によって最適解への到達が保証されているためです。
+
+## 3.1. 劣モジュラ最適化
+劣モジュラとは、関数の凸性を集合関数に拡張した概念です。
+
+劣モジュラ関数の大きな特徴として、貪欲法で最適解に到達できるという性質があります。
 
 - 貪欲法 (greedy) : 複数の候補点を得たい場合に、1点ずつ逐次的に決定していく手法のこと。
+
+## 3.2. 候補点の逐次最適化
+元論文２では、 $\mathcal{L}(\mathbf{X})=\mathbb{E}[\max{\hat{l}(\mathbf{y})}]$ の形で書ける獲得関数を"myopic maximal" (MM) と呼び、こうした獲得関数がいくつかの条件の下で劣モジュラ関数であることを示しています（証明略）。
+代表的な獲得関数の中ではEI, PI, UCBなどがMMであり、したがってこれらの獲得関数を最適化する場合、貪欲法で最適解付近に到達できることがわかります。
+加えて論文では比較実験も行われており、貪欲法による逐次最適化の方がより少ない評価回数でより最適な点に到達できていることが確認できます。
+
+![元論文２の実験結果]
 
 [memo]
 - [元論文2](https://proceedings.neurips.cc/paper/2018/hash/498f2c21688f6451d9f5fd09d53edda7-Abstract.html)では、貪欲法による逐次最適化の方が精度に優れる可能性が指摘されている。

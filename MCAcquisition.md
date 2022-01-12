@@ -70,8 +70,8 @@ $$\nabla\mathcal{L}(\mathbf{X}) \approx \nabla\mathcal{L}_m(\mathbf{X}):= \frac{
 
 以上より、*勾配を計算できる獲得関数の近似* $\mathcal{L}_m(\mathbf{X})$ が得られました。これが**Monte Carlo獲得関数**です。
 
-## 1.3. BoTorch実装（EIの場合）
-EIを例に、BoTorchでの実装を確認しておきます。EIのMC獲得関数版（qEI）は[`qExperimentImprovement`](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/acquisition/monte_carlo.py#L93)として実装されています。このうち実際の計算を担うのは`forward()`メソッドです。
+## 1.3. BoTorchにおける実装例
+EIを例に、BoTorchにおけるMC獲得関数の実装を確認しておきます。EIのMC獲得関数版（qEI）は[`qExperimentImprovement`](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/acquisition/monte_carlo.py#L93)として実装されています。このうち実際の計算を担うのは`forward()`メソッドです。
 
 ```py:monte_carlo.py
     @concatenate_pending_points
@@ -79,10 +79,10 @@ EIを例に、BoTorchでの実装を確認しておきます。EIのMC獲得関�
     def forward(self, X: Tensor) -> Tensor:
         ### (中略)
         posterior = self.model.posterior(X)
-        samples = self.sampler(posterior)
-        obj = self.objective(samples, X=X)
-        obj = (obj - self.best_f.unsqueeze(-1).to(obj)).clamp_min(0)
-        q_ei = obj.max(dim=-1)[0].mean(dim=0)
+        samples = self.sampler(posterior) ## 1. 事後分布からサンプリング
+        obj = self.objective(samples, X=X) ## 2. 指定した場合のみ、サンプルを変換
+        obj = (obj - self.best_f.unsqueeze(-1).to(obj)).clamp_min(0) ## 3. utility計算
+        q_ei = obj.max(dim=-1)[0].mean(dim=0) ## 4. qEIを計算
         return q_ei
 ```
 
@@ -102,17 +102,19 @@ EIを例に、BoTorchでの実装を確認しておきます。EIのMC獲得関�
   1. `X`における事後分布 $p(\mathbf{y}|\mathbf{X})$ から、準モンテカルロ法によるサンプリング
      - `posterior = self.model.posterior(X)`で、与えたGPモデル`gp`の事後分布を取得し、`samples = self.sampler(posterior)`によりサンプリング実行
      - `self.sampler`は何も指定しなければ`SobolQMCNormalSampler`で512個のサンプルを生成
+       - このサンプリングでは、後述するre-parametrizationを使用しています。
   2. 取得サンプル$\{\mathbf{y}^k\}$ を、指定した`objective`で変形
      - デフォルトでは`squeeze(-1)`するだけの`IdentityMCObjective`
      - 出力が多変数の場合、出力に重み付けするために使用する？
   3. qEIのutilityを計算
      - $ReLU(\mathbf{y} - \alpha)$ を計算
        - `obj = (obj - self.best_f.unsqueeze(-1).to(obj)).clamp_min(0)`
+  4. qEIを計算
      - 候補点$\mathbf{X}$に関する最大値 $\max(ReLU(\mathbf{y} - \alpha))$ を取る
        - `obj.max(dim=-1)[0]`
      - サンプル平均 = 期待値のMC近似を求め $\mathcal{L}_m(\mathbf{X}) = \mathbb{E}_{\mathbf{y}}[\max(ReLU(\mathbf{y} - \alpha))]$ を得る
 
-## 1.4. 非連続性への対応
+## 1.4. 非連続性への対応(未作成)
 PI（改善確率）やES（エントロピー探索）系の獲得関数を用いる場合、utilityにHeaviside関数が現れ、被積分関数の非連続性が生じます。
 
 # 2. 勾配法による最適化
@@ -139,9 +141,129 @@ $$\nabla\mathcal{L}_m(\mathbf{X})=\mathbb{E}_{\mathbf{z}}[\nabla l(\phi(\mathbf{
 
 として計算できます。
 
-## 2.2. 
+このre-parametrizationはBoTorchモデルの事後分布が備える`rsample`メソッドによって実現されます。
+通常事後分布からのサンプリングには[SobolQMCNormalSampler](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/sampling/samplers.py#L226)が用いられますが、これは
+
+1. まず標準正規分布に従うサンプルを生成し、
+2. そのサンプルを`posterior.rsample()`によってre-parametrizationする
+
+という処理になっています。
+[forward部分の実装](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/sampling/samplers.py#L82)を見ると、
+
+```py:samplers.py
+    def forward(self, posterior: Posterior) -> Tensor:
+        ## (中略)
+        base_sample_shape = self._get_base_sample_shape(posterior=posterior)
+        self._construct_base_samples(posterior=posterior, shape=base_sample_shape)
+        samples = posterior.rsample(
+            sample_shape=self.sample_shape, base_samples=self.base_samples
+        )
+        return 
+```
+
+- `_construct_base_samples()`で $\mathcal{N}(\mathbf{0}, \mathbf{I})$ からサンプル生成
+- `posterior.rsample()`で、与えられた事後分布に合わせてre-parametrization
+
+という流れが確認できます。
+
+この`rsample()`は内部的には[GPyTorchのmultivariate_normal](https://docs.gpytorch.ai/en/latest/_modules/gpytorch/distributions/multivariate_normal.html)が持つ[rsample()メソッド](https://docs.gpytorch.ai/en/latest/_modules/gpytorch/distributions/multivariate_normal.html)を実行しています（もちろん型や配列長を合わせるなどの処理は入っていますが）。これはまさにreparametrizationのためのメソッドです。
+前処理・後処理が多く入っていますが、該当部分だけを抜き出すと下記のようになります。
+
+```py:multivariate_normal.py
+    def rsample(self, sample_shape=torch.Size(), base_samples=None):
+        covar = self.lazy_covariance_matrix
+            covar_root = covar.root_decomposition().root
+            ## (中略)
+            # Now reparameterize those base samples
+            ## (中略)
+            res = covar_root.matmul(base_samples) + self.loc.unsqueeze(-1)
+            ## (中略)
+       return res
+```
+
+- 共分散行列を `covar.root_decomposition().root` によって分解
+- $\boldsymbol{\mu} + \mathbf{L}\mathbf{z}$ を、`covar_root.matmul(base_samples) + self.loc.unsqueeze(-1)` として計算
+
+以上の処理によって、MC獲得関数の勾配をPyTorchの誤差逆伝播で得ることができます。
+
+## 2.2. optimize_acqf()による最適化
 勾配が分かれば、候補点 $\mathbf{X}$ を最適化することができます。
-ここではBoTorchでの実装を確認しておきます。
+ここではBoTorchの獲得関数最適化用関数である[optimize_acqf()](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/optim/optimize.py#L49)を確認しておきます。
+
+`optimize_acqf()`は、処理の核となる`gen_candidates_scipy()`により候補点を作成します。
+
+```py:optimize.py
+    for i, batched_ics_ in enumerate(batched_ics):
+        # optimize using random restart optimization
+        batch_candidates_curr, batch_acq_values_curr = gen_candidates_scipy(
+            initial_conditions=batched_ics_,
+            acquisition_function=acq_function,
+            lower_bounds=bounds[0],
+            upper_bounds=bounds[1],
+            options={k: v for k, v in options.items() if k not in INIT_OPTION_KEYS},
+            inequality_constraints=inequality_constraints,
+            equality_constraints=equality_constraints,
+            fixed_features=fixed_features,
+        )
+        batch_candidates_list.append(batch_candidates_curr)
+        batch_acq_values_list.append(batch_acq_values_curr)
+        logger.info(f"Generated candidate batch {i+1} of {len(batched_ics)}.")
+    batch_candidates = torch.cat(batch_candidates_list)
+    batch_acq_values = torch.cat(batch_acq_values_list)
+
+    ## (中略)
+
+    if return_best_only:
+        best = torch.argmax(batch_acq_values.view(-1), dim=0)
+        batch_candidates = batch_candidates[best]
+        batch_acq_values = batch_acq_values[best]
+    ## (中略)
+    return batch_candidates, batch_acq_values
+```
+- for文はいわゆる"t-batch"で、初期値を変えて複数回の最適化を実行しています。
+  - デフォルトでは `return_best_only=True` であり、"t-batch"で得た候補点 `batch_candidates` から獲得関数値 `batch_acq_values` が最大のものを返します。
+
+処理の核となる [`gen_candidates_scipy()`](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/generation/gen.py#L31) は、その名の通りscipy.optimizingを使って獲得関数を最大化 or 最小化する候補点を返します。
+制約条件や初期値処理が入っているものの、中核部分はscipyのminimizeをそのまま使っています。
+
+```py:gen.py
+    res = minimize(
+        f,
+        x0,
+        method=options.get("method", "SLSQP" if constraints else "L-BFGS-B"),
+        jac=True,
+        bounds=bounds,
+        constraints=constraints,
+        callback=options.get("callback", None),
+        options={k: v for k, v in options.items() if k not in ["method", "callback"]},
+    )
+```
+
+- 引数`jac`をTrueとしたため、第一引数として与える（最小化する）関数は、値とともに勾配を返す必要があります。
+- 第一引数として与える `f` は直前で定義されており、最小化するlossは獲得関数×(-1)とし、その勾配はpytorchの自動微分で求めています。その実装からnanに関する処理を除くと、下記のようになります。
+
+```py:gen.py
+    def f(x):
+        ## (中略)
+        X = (
+            torch.from_numpy(x)
+            .to(initial_conditions)
+            .view(shapeX)
+            .contiguous()
+            .requires_grad_(True)
+        )
+        X_fix = fix_features(X, fixed_features=fixed_features)
+        loss = -acquisition_function(X_fix).sum()
+        # compute gradient w.r.t. the inputs (does not accumulate in leaves)
+        gradf = _arrayify(torch.autograd.grad(loss, X)[0].contiguous().view(-1))
+        ## (中略)
+        fval = loss.item()
+        return fval, gradf
+
+```
+
+- `X`のうち固定する引数を`fixed_features`で固定した後、`loss`として指定した獲得関数×(-1)を計算しています。
+- その後PyTorchの自動微分により、入力`X`に関する獲得関数の勾配を計算しています。MC獲得関数であれば、先ほどのre-parametrizationによってこの計算が可能となります。
 
 
 # 3. 貪欲法による逐次最適化

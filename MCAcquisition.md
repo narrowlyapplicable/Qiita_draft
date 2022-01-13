@@ -268,53 +268,57 @@ $$\nabla\mathcal{L}_m(\mathbf{X})=\mathbb{E}_{\mathbf{z}}[\nabla l(\phi(\mathbf{
 
 # 3. 貪欲法による逐次最適化
 
-元論文２では、複数の候補点 $\mathbf{X}=(\mathbf{x}^1, ..., \mathbf{x}^p)$ を決定する場合において、（同時に最適化するより）1点ずつ逐次的に決定する方が良い性能を示すことが示唆されています。
-これは大半の獲得関数が持つ劣モジュラ性により、貪欲法によって最適解への到達が保証されているためです。
+§2. までで、複数の候補点を同時に最適化する手法を紹介しました。
+しかし元論文２では、複数の候補点 $\mathbf{X}=(\mathbf{x}^1, ..., \mathbf{x}^p)$ を決定する場合において、（同時に最適化するより）1点ずつ逐次的に決定する方が良い性能を示すことが示唆されています。これは大半の獲得関数が持つ劣モジュラ性（submodularity）により、貪欲法（greedy optimization）で最適解近傍へ到達することが保証されているためです。
+BoTorchでは、貪欲法によって1点ずつ（逐次的に）候補点を決定していく手法が`Sequential`モードとして実装されています。
 
 ## 3.1. 劣モジュラ最適化
-劣モジュラとは、関数の凸性を集合関数に拡張した概念です。
+獲得関数を最大化するような（複数の）候補点を選ぶことは、組合せ最適化の一種とみなすことができます。
+すなわち、有限集合 $\mathcal X$ の部分集合 $S \subset \mathcal X$ に対して実数値を取る関数 $a:2^{\mathcal X} \rightarrow \mathbb R$ を最大化する $S$ を選ぶ組合せ最適化問題を解いていることになります。このように、部分集合に実数値を割り当てる関数を **集合関数** と呼びます。
 
-劣モジュラ関数の大きな特徴として、貪欲法で最適解に到達できるという性質があります。
+劣モジュラ性は、関数の凸性を集合関数（set function）に拡張した概念と見做せます。
+具体的な定義は下記のようになります。
 
-- 貪欲法 (greedy) : 複数の候補点を得たい場合に、1点ずつ逐次的に決定していく手法のこと。
+- 部分集合 $S,T \subset \mathcal X$ に対して、集合関数$a$が $$a(S)+a(T) \geq a(S \cup T) + a(S \cap T)$$ を満たすとき、$a$は **劣モジュラ関数（submodular function）** であるという。
+
+劣モジュラ関数の詳細については、MLPシリーズで入門書籍が出ているので参照してください。
+- [『劣モジュラ最適化と機械学習』](https://www.kspub.co.jp/book/detail/1529090.html)
+  - この本の§3.3.では、相互情報量を獲得関数に用いた場合の候補点最適化が説明されています。
+
+劣モジュラ関数の最大化問題はNP困難ですが、**貪欲法**（greesy algorithm）により良い近似解に到達できるという性質があります。
+
+- 貪欲法 : 複数の候補点を得たい場合に、1点ずつ逐次的に決定していく手法。具体的には下記の通り。
+  1. $S=\emptyset$ とする。
+  2. $f(S \cup \{x\})$ を最大化する $x\in \mathcal X$ を選び、$S$ に追加する。
+  3. ステップ2.を繰り返し、$|S|=q$ となったら停止する。
+
+すなわち獲得関数が劣モジュラであれば、候補点 $\mathbf{X}=(\mathbf{x}_1 ,\cdots, \mathbf{x}_q)$ を1点ずつ最適化していけば良いことになります。
+既に決定した $k<q$ 個の候補点を $\mathbf{X}_{<k} = (\mathbf{x}_1 ,\cdots, \mathbf{x}_k)$ とすると、$k+1$点目$x\in\mathcal{X}$は $\mathcal{L} (\mathbf{X}_{<k} \cup \{x\})$ を最大化するように選んでいきます。
 
 ## 3.2. 候補点の逐次最適化
-元論文２では、 $\mathcal{L}(\mathbf{X})=\mathbb{E}[\max{\hat{l}(\mathbf{y})}]$ の形で書ける獲得関数を"myopic maximal" (MM) と呼び、こうした獲得関数がいくつかの条件の下で劣モジュラ関数であることを示しています（証明略）。
-代表的な獲得関数の中ではEI, PI, UCBなどがMMであり、したがってこれらの獲得関数を最適化する場合、貪欲法で最適解付近に到達できることがわかります。
+[元論文2](https://proceedings.neurips.cc/paper/2018/hash/498f2c21688f6451d9f5fd09d53edda7-Abstract.html)では、 $\mathcal{L}(\mathbf{X})=\mathbb{E}[\max{\hat{l}(\mathbf{y})}]$ の形で書ける獲得関数を"myopic maximal" (MM) と呼び、こうした獲得関数がいくつかの条件の下で劣モジュラ関数であることを示しています（証明略）。
+代表的な獲得関数の中ではEI, PI, UCBなどがMMであり、したがってこれらの獲得関数を最適化する場合、前説に示した貪欲法で最適解付近に到達できることがわかります。
+
+```math
+x_{k+1} = \argmax_x{\mathcal{L}(\mathbf{X}_{<k} \cup \{x\})}.
+```
+
 加えて論文では比較実験も行われており、貪欲法による逐次最適化の方がより少ない評価回数でより最適な点に到達できていることが確認できます。
 
 ![元論文２の実験結果]
 
+BoTorchでは[`optimize_Acqf()`](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/optim/optimize.py#L49)で`sequential=True`とすれば逐次最適化が実行できます。
+
+- 内部では`optimize_acqf(q=1)`が再起的に呼ばれ、候補となるDesign Pointを1点ずつ決定していく。
+- 決定したDesign Pointは`X_pending`として保留され、以降は最適化されない。しかし獲得関数値の算出時には`forward()`に入力される。
+ - `X_pending`（保留された点）は[concatenate_pending_pointsデコレータ](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/utils/transforms.py#L248)によって、獲得関数への入力に結合されます。このデコレータによって保留された点は、獲得関数値の計算には反映されるものの、勾配は計算されず最適化対象からは外れるようになっています。
+
 [memo]
-- [元論文2](https://proceedings.neurips.cc/paper/2018/hash/498f2c21688f6451d9f5fd09d53edda7-Abstract.html)では、貪欲法による逐次最適化の方が精度に優れる可能性が指摘されている。
-  - 獲得関数の多くが劣モジュラ関数となるため、貪欲法で最適化することで最適解付近に到達できることが示されています。
-  - 劣モジュラ関数と最適化については、MLPシリーズで入門書籍が出ているので参照してください。
-    - [『劣モジュラ最適化と機械学習』](https://www.kspub.co.jp/book/detail/1529090.html)
-
-- BoTorchでは[`optimize_Acqf()`](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/optim/optimize.py#L49)で`sequential=True`とすれば実行できる。
-  - 内部では`optimize_acqf(q=1)`が再起的に呼ばれ、候補となるDesign Pointを1点ずつ決定していく。
-  - 決定したDesign Pointは`X_pending`として保留され、以降は最適化されない。しかし獲得関数値の算出時には`forward()`に入力される。
-    - `X_pending`は[concatenate_pending_pointsデコレータ](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/utils/transforms.py#L248)によって、獲得関数への入力に結合されます。
-    - 獲得関数の計算時には、デコレータを除いて変化はありません。たとえば[qExpectedImprovementの場合](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/acquisition/monte_carlo.py#L144)
-
-```py:acquisition/monte_carlo.py
-    def forward(self, X: Tensor) -> Tensor:
-        ### (中略)
-        posterior = self.model.posterior(X)
-        samples = self.sampler(posterior)
-        obj = self.objective(samples, X=X)
-        obj = (obj - self.best_f.unsqueeze(-1).to(obj)).clamp_min(0)
-        q_ei = obj.max(dim=-1)[0].mean(dim=0)
-        return q_ei
-
-```
-  - これは貪欲法$$x_j = \argmax_{x}{\mathcal{L}(\mathbf{X}_{<j} \cup \{x\})}$$の実装
-
 - MES (Max-value Entropy Search)ではfantasize()を使用している。
   - [BoTorchのfantasize](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/models/model.py#L132)は、固定した暫定Design Pointにおける事後分布からサンプリングし、各サンプルを加えたGPを作成している。
 
 # 終わりに
-BoTorchの基本を解説した前回に続き、BoTorchの中核を成すMonte Carlo獲得関数とその使用法について説明しました。私の勘違いや理解の甘い点などがありましたら、コメント等いただければ幸いです。
+BoTorchの基本を解説した前回に続き、BoTorchの中核を成すMonte Carlo獲得関数とその使用法について説明しました。私の勘違いや理解の甘い点などがありましたら、コメント等いただければ幸いです。~マサカリは優しめにお願いします~
 さらに続けて、BoTorchに実装されている新しい獲得関数や関係する手法について記事を書ければと考えております。
 
 # 参考文献

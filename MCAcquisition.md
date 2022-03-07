@@ -1,3 +1,9 @@
+---
+title: [BoTorch]Monte Carlo獲得関数とその最適化
+tags: ベイズ最適化 ガウス過程 BoTorch GPyTorch
+author: narrowlyapplicable
+slide: false
+---
 # Outline
 1. Monte Carlo 獲得関数
 2. 勾配法による最大化
@@ -9,7 +15,7 @@
 
 BoTorchの最大の特徴は、獲得関数の最大化を勾配法で統一している点にあります。  
 ベイズ最適化（Bayesian Optimization; BO）では通常、候補点の中から獲得関数を最大にする点を選び、次の評価対象とします。
-$$x^{*} = \argmax_{\mathbb{x}}{\mathcal{L}(\mathbb{x})}$$
+$$x^{*} = \arg\max _{\mathbf{x}}{\mathcal{L}(\mathbf{x})}$$
 しかしこの最大化は必ずしも容易ではなく、複雑な獲得関数（Entropy SearchやKnowledge Gradientなど）を扱う場合や、複数の候補点を選ぶ（Parallel Selection）場合などにおいては、一般に勾配法による最適化は実行困難となります。この最大化自体がBlack-Box最適化問題となり、CMA-ESなど別のBlack-Box最適化手法に頼ることになります。  
 
 BoTorchはこうした煩雑な処理を避け、獲得関数最大化を通常の勾配法に統一しています。これにより、GpyOptなどの先行ライブラリに比べて、多彩な獲得関数の使用やParallel Selectionの気軽な実行が可能となっています。  
@@ -33,13 +39,12 @@ BoTorchのドキュメントにはMC獲得関数およびその最大化に関�
 - 先行論文３：[Parallel Bayesian Global Optimization of Expensive Functions](https://arxiv.org/abs/1602.05149)
 
 しかし上記の元論文×２で提案されたMC獲得関数は、より広範な（よく知られたもののうち大半の）獲得関数に対して一貫した手法を提供しました。BoTorchはこのMC獲得関数を核とし、多彩な獲得関数を扱いやすい形で提供しています。
-~~先行論文はあまりちゃんと読めてないです…~~
 
 ## 1.2. 定義
 ### 1.2.1. 必要な表記と諸概念
-問題設定
+問題設定 
 
-- 観測済みのデータ $\mathcal{D} := \{ (\mathbb{x}_i, y_i) \}_{i=1}^N, \mathbb{x}_i\in\mathbb{R}^{d}$ から、最適なq個の候補点 $\mathbf{X}\in\mathbb{R}^{q\times d}$ を決定したい。
+- 観測済みのデータ $\mathcal{D} := \\{ ({\mathbf{x}}_i, y_i) \\} _{i=1}^N, {\mathbf{x}}_i \in {\mathbb{R}}^{d}$ から、最適なq個の候補点 $\mathbf{X}\in\mathbb{R}^{q \times d}$ を決定したい。
 - 代理モデル（surrogate model）としてガウス過程（GP） $p(f|\mathcal{D})$ を使い、そのハイパーパラメータをデータに適合させた結果を $\mathcal{M}(\mathbf{X}):=(\mu(\mathbf{X}), \mathbf{\Sigma}(\mathbf{X}))$ と書く。$\mathbf{X}$の下での事後分布は $\mathcal{N}(\mathbf{y}|\mathbf{\mu}, \mathbf{\Sigma})$。
 
 utility関数
@@ -47,12 +52,15 @@ utility関数
 - 大半の獲得関数は、何らかの関数（utility関数）$l$の期待値として表すことができます。
   - 獲得関数 $\mathcal{L}(\mathbf{X})$ のutility関数を $l(\mathbf{y})$ とすると、$$\mathcal{L}(\mathbf{X}) = \mathbb{E}_{\mathbf{y}}[l(\mathbf{y})] = \int{l(\mathbf{y})p(\mathbf{y}|\mathbf{X}, \mathcal{D})d\mathbf{y}}$$ と書き換えます。
   - 獲得関数がパラメータ$\alpha$を持つ場合、utilityもそれに対応し $\mathcal{L}(\mathbf{X};\alpha) = \mathbb{E}_{\mathbf{y}}[l(\mathbf{y};\alpha)]$ となります。
-  - 代表的な獲得関数に対するutilityの一覧は、元論文２の表に示されています。![utility.png](./graph/utility.png) 
+  - 代表的な獲得関数に対するutilityの一覧は、元論文２の表に示されています。
+   ![utility.png](https://qiita-image-store.s3.ap-northeast-1.amazonaws.com/0/1617118/dc817638-68ae-66c5-01f2-fb2a31b42b15.png)
+
     出典：[Maximizing acquisition functions for Bayesian optimization](https://proceedings.neurips.cc/paper/2018/hash/498f2c21688f6451d9f5fd09d53edda7-Abstract.html)
 
 ### 1.2.2. Monte Carlo近似
 ガウス過程の事後分布 $p(\mathbf{y}|\mathbf{X}, \mathcal{D})$ はパラメータ既知の正規分布なので、サンプル$\mathbf{y}^k\sim p(\mathbf{y}|\mathbf{X}, \mathcal{D})$を生成してMonte Carlo近似できます。
-$$\mathcal{L}(\mathbf{X}) \approx \mathcal{L}_m(\mathbf{X}) := \frac{1}{m}\sum_{k=1}^m{l(\mathbf{y^k})}$$
+
+$$\mathcal{L}(\mathbf{X}) \approx \mathcal{L}_m(\mathbf{X}) := \frac{1}{m}\sum _{k=1}^m{l(\mathbf{y^k})}$$
 
 勾配法で最適な入力$\mathbf{X}$を決めるには、獲得関数の勾配が必要です。
 上記の近似から獲得関数の勾配を求めるには、微分と期待値（積分）の交換 $$\nabla\mathcal{L} = \nabla\mathbb{E}[l(\mathbf{y})]=\mathbb{E}[\nabla l(\mathbf{y})]$$ が成り立つ必要があります。
@@ -66,12 +74,12 @@ $$\mathcal{L}(\mathbf{X}) \approx \mathcal{L}_m(\mathbf{X}) := \frac{1}{m}\sum_{
 
 上記の交換が成り立てば、獲得関数の勾配もMonte Carlo近似できます。
 
-$$\nabla\mathcal{L}(\mathbf{X}) \approx \nabla\mathcal{L}_m(\mathbf{X}):= \frac{1}{m}\sum_{k=1}^m{\nabla l(\mathbf{y^k})}$$
+$$\nabla\mathcal{L}(\mathbf{X}) \approx \nabla\mathcal{L} _m(\mathbf{X}):= \frac{1}{m}\sum _{k=1}^m{\nabla l(\mathbf{y^k})}$$
 
 以上より、*勾配を計算できる獲得関数の近似* $\mathcal{L}_m(\mathbf{X})$ が得られました。これが**Monte Carlo獲得関数**です。
 
 ## 1.3. BoTorchにおける実装例
-EIを例に、BoTorchにおけるMC獲得関数の実装を確認しておきます。EIのMC獲得関数版（qEI）は[`qExperimentImprovement`](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/acquisition/monte_carlo.py#L93)として実装されています。このうち実際の計算を担うのは`forward()`メソッドです。
+EIを例に、BoTorchにおけるMC獲得関数の実装を確認しておきます。EIのMC獲得関数版（qEI）は[`qExpectedImprovement`](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/acquisition/monte_carlo.py#L93)として実装されています。このうち実際の計算を担うのは`forward()`メソッドです。
 
 ```py:monte_carlo.py
     @concatenate_pending_points
@@ -91,16 +99,8 @@ EIを例に、BoTorchにおけるMC獲得関数の実装を確認しておきま
   - 2番目の`t_batch_mode_transform()`は、初期値を変えて複数回の最適化を独立に実行する（t-batch動作）のため、入力データを変換するデコレータです。
 
 - `forward(X)`において、指定した入力点（複数可）`X`に対するqEIを計算します。
-
-  ```py:example
-  gp = SingleTaskGP(train_X, train_Y)
-  ### (中略)：gpのハイパーパラメータは調整済とする
-  best_f = train_Y.max() # 既存点の最大値を求めてqEIに与える 
-  qEI = qExpectedImprovement(gp, best_f)
-  ```
-
   1. `X`における事後分布 $p(\mathbf{y}|\mathbf{X})$ から、準モンテカルロ法によるサンプリング
-     - `posterior = self.model.posterior(X)`で、与えたGPモデル`gp`の事後分布を取得し、`samples = self.sampler(posterior)`によりサンプリング実行
+     - `posterior = self.model.posterior(X)`で、与えたGPモデル`model`の事後分布を取得し、`samples = self.sampler(posterior)`によりサンプリング実行
      - `self.sampler`は何も指定しなければ`SobolQMCNormalSampler`で512個のサンプルを生成
        - このサンプリングでは、後述するre-parametrizationを使用しています。
   2. 取得サンプル$\{\mathbf{y}^k\}$ を、指定した`objective`で変形
@@ -108,14 +108,11 @@ EIを例に、BoTorchにおけるMC獲得関数の実装を確認しておきま
      - 出力が多変数の場合、出力に重み付けするために使用する？
   3. qEIのutilityを計算
      - $ReLU(\mathbf{y} - \alpha)$ を計算
-       - `obj = (obj - self.best_f.unsqueeze(-1).to(obj)).clamp_min(0)`
+         - `obj = (obj - self.best_f.unsqueeze(-1).to(obj)).clamp_min(0)`
   4. qEIを計算
      - 候補点$\mathbf{X}$に関する最大値 $\max(ReLU(\mathbf{y} - \alpha))$ を取る
-       - `obj.max(dim=-1)[0]`
-     - サンプル平均 = 期待値のMC近似を求め $\mathcal{L}_m(\mathbf{X}) = \mathbb{E}_{\mathbf{y}}[\max(ReLU(\mathbf{y} - \alpha))]$ を得る
-
-## 1.4. 非連続性への対応(未作成)
-PI（改善確率）やES（エントロピー探索）系の獲得関数を用いる場合、utilityにHeaviside関数が現れ、被積分関数の非連続性が生じます。
+         - `obj.max(dim=-1)[0]`
+     - サンプル平均 = 期待値のMC近似を求め $\mathcal{L} _m(\mathbf{X}) = \mathbb{E} _{\mathbf{y}}[\max(ReLU(\mathbf{y} - \alpha))]$ を得る
 
 # 2. 勾配法による最適化
 ## 2.1. re-parametrizationによる勾配評価
@@ -129,15 +126,13 @@ MC獲得関数の勾配
 は連鎖律の途中に事後分布 $p(\mathbf{y}|\mathbf{X})=p(\mathbf{y}|\mathcal{M}(\mathbf{X}))$ からのサンプリングを挟むため、勾配の評価にはre-parametrization（再パラメータ化）が必要になります。
 このre-parametrizationはVAEなどと同様です。
 
-![VAEとの比較]()
-
 決定論的な関数 $\phi$ により、事後分布からのサンプル $\mathbf{y}^k \sim p(\mathbf{y}|\theta)$ を、各次元独立な標準正規分布からのサンプル $\mathbf{z} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})$ で置き換えます。
 
-$$\mathbb{E}_{\mathbf{y}}[l(\mathbf{y})]=\mathbb{E}_{\mathbf{z}}[l(\phi(\mathbf{z}))],\quad\mathbf{y}^k=\phi(\mathbf{z},\theta)$$
+$$\mathbb{E}_{\mathbf{y}}[l(\mathbf{y})]=\mathbb{E} _{\mathbf{z}}[l(\phi(\mathbf{z}))],\quad\mathbf{y}^k=\phi(\mathbf{z},\theta)$$
 
 ガウス過程であれば事後分布は正規分布となるので、 $\mathbf{\Sigma}$ のコレスキー分解 $\mathbf{L}$ を用いて $\phi(\mathbf{z},\mathcal{M}(\mathbf{X})):=\boldsymbol{\mu}+\mathbf{L}\mathbf{z}$ とすれば、
 
-$$\nabla\mathcal{L}_m(\mathbf{X})=\mathbb{E}_{\mathbf{z}}[\nabla l(\phi(\mathbf{z}))]$$
+$$\nabla\mathcal{L} _m(\mathbf{X})=\mathbb{E} _{\mathbf{z}}[\nabla l(\phi(\mathbf{z}))]$$
 
 として計算できます。
 
@@ -269,7 +264,7 @@ $$\nabla\mathcal{L}_m(\mathbf{X})=\mathbb{E}_{\mathbf{z}}[\nabla l(\phi(\mathbf{
 # 3. 貪欲法による逐次最適化
 
 §2. までで、複数の候補点を同時に最適化する手法を紹介しました。
-しかし元論文２では、複数の候補点 $\mathbf{X}=(\mathbf{x}^1, ..., \mathbf{x}^p)$ を決定する場合において、（同時に最適化するより）1点ずつ逐次的に決定する方が良い性能を示すことが示唆されています。これは大半の獲得関数が持つ劣モジュラ性（submodularity）により、貪欲法（greedy optimization）で最適解近傍へ到達することが保証されているためです。
+しかし元論文２では、複数の候補点 $\mathbf{X}=(\mathbf{x}^1, ..., \mathbf{x}^p)$ を決定する場合において、（同時に最適化するより）1点ずつ逐次的に決定する方が良い性能を示すことが示唆されています。これは大半の獲得関数が持つ劣モジュラ性（submodularity）により、貪欲法（greedy algorithm）で最適解近傍へ到達することが保証されているためです。
 BoTorchでは、貪欲法によって1点ずつ（逐次的に）候補点を決定していく手法が`Sequential`モードとして実装されています。
 
 ## 3.1. 劣モジュラ最適化
@@ -282,51 +277,91 @@ BoTorchでは、貪欲法によって1点ずつ（逐次的に）候補点を決
 - 部分集合 $S,T \subset \mathcal X$ に対して、集合関数$a$が $$a(S)+a(T) \geq a(S \cup T) + a(S \cap T)$$ を満たすとき、$a$は **劣モジュラ関数（submodular function）** であるという。
 
 劣モジュラ関数の詳細については、MLPシリーズで入門書籍が出ているので参照してください。
+
 - [『劣モジュラ最適化と機械学習』](https://www.kspub.co.jp/book/detail/1529090.html)
   - この本の§3.3.では、相互情報量を獲得関数に用いた場合の候補点最適化が説明されています。
 
-劣モジュラ関数の最大化問題はNP困難ですが、**貪欲法**（greesy algorithm）により良い近似解に到達できるという性質があります。
+劣モジュラ関数の最大化問題はNP困難ですが、**貪欲法**（greedy algorithm）により良い近似解に到達できるという性質があります。
 
 - 貪欲法 : 複数の候補点を得たい場合に、1点ずつ逐次的に決定していく手法。具体的には下記の通り。
-  1. $S=\emptyset$ とする。
-  2. $f(S \cup \{x\})$ を最大化する $x\in \mathcal X$ を選び、$S$ に追加する。
+  1.  $S=\emptyset$ とする。
+  2.  $f(S \cup \\{x\\})$ を最大化する $x\in \mathcal X$ を選び、$S$ に追加する。
   3. ステップ2.を繰り返し、$|S|=q$ となったら停止する。
 
-すなわち獲得関数が劣モジュラであれば、候補点 $\mathbf{X}=(\mathbf{x}_1 ,\cdots, \mathbf{x}_q)$ を1点ずつ最適化していけば良いことになります。
-既に決定した $k<q$ 個の候補点を $\mathbf{X}_{<k} = (\mathbf{x}_1 ,\cdots, \mathbf{x}_k)$ とすると、$k+1$点目$x\in\mathcal{X}$は $\mathcal{L} (\mathbf{X}_{<k} \cup \{x\})$ を最大化するように選んでいきます。
+すなわち獲得関数が劣モジュラであれば、候補点 $\mathbf{X}=(\mathbf{x} _1 , \cdots, \mathbf{x} _q)$ を1点ずつ最適化していけば良いことになります。
+既に決定した $k<q$ 個の候補点を $\mathbf{X} _{<k} = (\mathbf{x} _1 ,\cdots, \mathbf{x} _k)$ とすると、$k+1$点目$x\in\mathcal{X}$は $\mathcal{L} (\mathbf{X} _{<k} \cup \\{x\\})$ を最大化するように選んでいきます。
 
 ## 3.2. 候補点の逐次最適化
 [元論文2](https://proceedings.neurips.cc/paper/2018/hash/498f2c21688f6451d9f5fd09d53edda7-Abstract.html)では、 $\mathcal{L}(\mathbf{X})=\mathbb{E}[\max{\hat{l}(\mathbf{y})}]$ の形で書ける獲得関数を"myopic maximal" (MM) と呼び、こうした獲得関数がいくつかの条件の下で劣モジュラ関数であることを示しています（証明略）。
 代表的な獲得関数の中ではEI, PI, UCBなどがMMであり、したがってこれらの獲得関数を最適化する場合、前説に示した貪欲法で最適解付近に到達できることがわかります。
 
 ```math
-x_{k+1} = \argmax_x{\mathcal{L}(\mathbf{X}_{<k} \cup \{x\})}.
+x_{k+1} = \arg\max_x{\mathcal{L}(\mathbf{X}_{<k} \cup \{x\})}.
 ```
 
-加えて論文では比較実験も行われており、貪欲法による逐次最適化の方がより少ない評価回数でより最適な点に到達できていることが確認できます。
+論文では比較実験も行われており、貪欲法による逐次最適化の方がより少ない評価回数でより最適な点に到達できると主張されています。
 
-![元論文２の実験結果]
+BoTorchで逐次最適化を実行するには、[optimize_acqf()](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/optim/optimize.py#L49)で`sequential=True`とします。
+このとき内部では`q=1`とした`optimize_acqf()`が繰り返し実行され、逐次的に候補点を決定していきます。
 
-BoTorchでは[`optimize_Acqf()`](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/optim/optimize.py#L49)で`sequential=True`とすれば逐次最適化が実行できます。
+```py:optimize.py
+    if sequential and q > 1:
+        ## (中略)
+        candidate_list, acq_value_list = [], []
+        base_X_pending = acq_function.X_pending # 保留済みの点を除けておく
+        for i in range(q):                      # 1点ずつ逐次決定
+            candidate, acq_value = optimize_acqf(
+                acq_function=acq_function,
+                bounds=bounds,
+                q=1,                            # 1点のみのoptmizeになっている
+                num_restarts=num_restarts,
+                raw_samples=raw_samples,
+                options=options or {},
+                inequality_constraints=inequality_constraints,
+                equality_constraints=equality_constraints,
+                fixed_features=fixed_features,
+                post_processing_func=post_processing_func,
+                batch_initial_conditions=None,
+                return_best_only=True,
+                sequential=False,
+            )
+            candidate_list.append(candidate)
+            acq_value_list.append(acq_value)
+            candidates = torch.cat(candidate_list, dim=-2)
+            acq_function.set_X_pending(         # 新規に決定した点を保留に追加
+                torch.cat([base_X_pending, candidates], dim=-2)
+                if base_X_pending is not None
+                else candidates
+            )
+        # Reset acq_func to previous X_pending state
+        acq_function.set_X_pending(base_X_pending)
+        return candidates, torch.stack(acq_value_list)
 
-- 内部では`optimize_acqf(q=1)`が再起的に呼ばれ、候補となるDesign Pointを1点ずつ決定していく。
-- 決定したDesign Pointは`X_pending`として保留され、以降は最適化されない。しかし獲得関数値の算出時には`forward()`に入力される。
- - `X_pending`（保留された点）は[concatenate_pending_pointsデコレータ](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/utils/transforms.py#L248)によって、獲得関数への入力に結合されます。このデコレータによって保留された点は、獲得関数値の計算には反映されるものの、勾配は計算されず最適化対象からは外れるようになっています。
+```
 
-[memo]
-- MES (Max-value Entropy Search)ではfantasize()を使用している。
-  - [BoTorchのfantasize](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/models/model.py#L132)は、固定した暫定Design Pointにおける事後分布からサンプリングし、各サンプルを加えたGPを作成している。
+- `optimize_acqf(q=1)`が再帰的に呼ばれ、候補点を1点ずつ決定しています。
+- 決定した候補点は`X_pending`として保留され、以降は最適化されません。しかし獲得関数値の算出時には`forward()`に入力されます。
+  - §1.3.に示した通り、獲得関数の`forward()`には必ず[concatenate_pending_pointsデコレータ](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/utils/transforms.py#L248)が付いています。
+
+  ```py:monte_carlo.py
+      @concatenate_pending_points
+      @t_batch_mode_transform()
+      def forward(self, X: Tensor) -> Tensor:
+  ```
+
+  - この[concatenate_pending_pointsデコレータ](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/utils/transforms.py#L248)によって、`X_pending`（保留された点）は獲得関数への入力に結合されます。このデコレータによって保留された点は、獲得関数値の計算には反映されるものの、勾配は計算されず最適化対象からは外れるようになっています。
+
+以上のように、BoTorchでは貪欲法によって複数候補点の逐次最適化を実行しています。
+
+
+- 注意点として、逐次最適化の途中で保留した点 $\mathbf{X} _{<k}$ に対応する出力 $(\mathbf{y} _1, \cdots, \mathbf{y} _k)$ は、原則として仮定も予測もしていません。
+現状のガウス過程モデルから $\mathbf{y}$ を予測し欠測を埋める手法（fantasize）もありますが、貪欲法ではその必要はありません。
+
+  - 例外として、エントロピー探索系の獲得関数のMES (Max-value Entropy Search)では、複数候補点の決定においてfantasize()を使用しています。
+     - [BoTorchのfantasize](https://github.com/pytorch/botorch/blob/v0.6.0/botorch/models/model.py#L132)は、保留した各点 $\mathbf{x}_{j}$ における事後分布 $p(\mathbf{y}|\mathbf{X})$から$\mathbf{y}$をサンプリングし、それらを加えたGPを作成しています。
 
 # 終わりに
-BoTorchの基本を解説した前回に続き、BoTorchの中核を成すMonte Carlo獲得関数とその使用法について説明しました。私の勘違いや理解の甘い点などがありましたら、コメント等いただければ幸いです。~マサカリは優しめにお願いします~
+BoTorchの基本を解説した前回に続き、BoTorchの中核を成すMonte Carlo獲得関数とその使用法について説明しました。私の勘違いや理解の甘い点などがありましたら、コメント等いただければ幸いです。~~マサカリは優しめにお願いします~~
 さらに続けて、BoTorchに実装されている新しい獲得関数や関係する手法について記事を書ければと考えております。
 
-# 参考文献
-- 論文
-  - [The Reparameterization Trick for Acquisition Functions](https://arxiv.org/abs/1712.00424)
-  - [Maximizing acquisition functions for Bayesian optimization](https://proceedings.neurips.cc/paper/2018/hash/498f2c21688f6451d9f5fd09d53edda7-Abstract.html)
-  - [Parallel Bayesian Global Optimization of Expensive Functions](https://arxiv.org/abs/1602.05149)
-- 書籍
-  - [劣モジュラ最適化と機械学習](https://www.kspub.co.jp/book/detail/1529090.html)
-  - [ガウス過程と機械学習](https://www.kspub.co.jp/book/detail/1529267.html)
-  - [Bayesian Optimization and Data Science](https://www.amazon.co.jp/Bayesian-Optimization-Data-Science-SpringerBriefs/dp/3030244938)
+

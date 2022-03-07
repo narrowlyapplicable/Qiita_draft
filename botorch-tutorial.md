@@ -1,14 +1,25 @@
+---
+title: ベイズ最適化ツールBoTorch入門
+tags: ベイズ最適化 BoTorch GPyTorch ガウス過程
+author: narrowlyapplicable
+slide: false
+---
 # Intro
 Optunaの記事2本に続いて、ガウス過程によるベイズ最適化ツール[BoTorch](https://botorch.org/)を扱います。
 
 BoTorchはFacebookが開発を主導するベイズ最適化用Pythonライブラリです。ガウス過程部分にはPyTorchを利用した実装である[GPyTorch](https://gpytorch.ai/)を利用していますが、獲得関数や候補点提案などに関する最新の手法をサポートしており、最小限の労力で最新のベイズ最適化を実行できます。特に獲得関数の工夫により、複数点の同時提案や多目的最適化などに対応できる点が特徴です。
 通常は同じFacebook主導のパッケージである[Ax](https://ax.dev/)から利用することが想定されていますが、ガウス過程や周辺手法を隠蔽せず細かく調整する場合はBoTorchを直接使用することになります。（Optunaからも一部機能が利用できるようになっています。）
 
-本記事では、BoTorchに実装されている最新手法を学ぶ準備として、BoTorchの基本的な利用方法とアルゴリズムの基本を紹介します。
+本記事では、BoTorchに実装されている最新手法を学ぶ準備として、BoTorchの基本的な使い方と、使われているアルゴリズムの基本を紹介します。
 なおベイズ最適化それ自体やガウス過程については説明しません。以下の資料などを参照してください。
 
 - 佐藤一誠先生のスライド：[ベイズ的最適化(Bayesian Optimization)の入門とその応用](https://www.slideshare.net/issei_sato/bayesian-optimization)
 - MLPシリーズの[『ガウス過程と機械学習』](https://www.kspub.co.jp/book/detail/1529267.html)
+
+[2022/01/15追加]
+
+- 松井孝太先生のスライド：[機械学習による統計的実験計画](https://drive.google.com/drive/folders/15uk8GHRd1Xy46zA2EE1yznoshqQ2Ylyp)
+    - 研究用途で使うライブラリとしてBoTorchが推薦されています。
 
 # インストール
 公式ではconda経由でのインストールが推奨されています（2021.06.30時点）。
@@ -20,7 +31,7 @@ conda install botorch -c pytorch -c gpytorch
 チャンネル指定はなくてもconda-forge等からインストールできますが、私が使っているWindows環境ではconflictを起こすことがありました。
 またPyTorch, GPyTorchの双方が必要になるので、できるだけ公式チャンネルからインストールした方が無難でしょう。
 
-# Get Start
+# Get Start（基本的な使い方）
 [公式トップページ](https://botorch.org/)にある"Get Start"からはじめましょう。この例には、BoTorchの最も基本的な利用方法が示されています。まずその全体像を示し、後述の章で関連部分について解説します。
 
 まずBoTorchをインポートし、乱数で仮想データを作成します。
@@ -150,14 +161,14 @@ ARDを有効にするには、カーネルの`ard_num_dims`引数に成分の数
 #### Scaleカーネル
 [ScaleKernel](https://docs.gpytorch.ai/en/stable/kernels.html#gpytorch.kernels.ScaleKernel)は、その名の通り出力変数のスケーリングを担当します。実装上はカーネルが定める共分散行列$\mathbf{K}_{orig}$に対して
 
-$$\mathbf{K}_{scaled} = \theta_{scale} \mathbf{K}_{orig}$$
+$$\mathbf{K}{scaled} = \theta_{scale} \mathbf{K}_{orig} $$
 
-と共分散行列を修正します。この$\theta_{scale}$はoutputscale parameterと呼び、データから推定します。
+と共分散行列を修正します。この $\theta_{scale}$ はoutputscale parameterと呼び、データから推定します。
 
 ####　観測ノイズについて
 通常ガウス過程では、観測ノイズの存在を考慮しカーネルに$\sigma^2 \mathbf{I}$を加えます（White Noise Kernel）。
 
-$$\mathbf{K}_{noise} = \mathbf{K}_{scaled} + \sigma^2 \mathbf{I} .$$
+$$\mathbf{K}{noise} = \mathbf{K}_{scaled} + \sigma^2 \mathbf{I} .$$
 
 しかし上記のデフォルト設定には、観測ノイズに対応するWhiteNoiseKernelが含まれていません。GPyTorchではWhiteNoiseKernelが廃止されており、観測ノイズは後述する`likelihood`で処理されています。
 
@@ -241,6 +252,9 @@ UCB = UpperConfidenceBound(gp, beta=0.1)
 
 このモンテカルロ獲得関数の利点により、*多数の候補点を同時にor逐次的に提案*したり（docsでは"batch acquisition functions"と呼称）、*独立でない多次元出力を同時に扱うモデル*を作成することが可能になります。この点こそ、**BoTorchの最大の特徴**です。
 
+[2022/01/14追記]
+[MC獲得関数の解析記事](https://qiita.com/narrowlyapplicable/items/3c2c80e05e16fa935cf1)を書きました。詳細はこちらをご覧ください。
+
 `botorch.acquisition`では、元の獲得関数名に`q`がついているものがモンテカルロ獲得関数です。
 主要な獲得関数（EI, UCB, EHVIなど）は一通り実装されており、解析的獲得関数と同じように使用できます。
 
@@ -264,7 +278,7 @@ qUCB = qUpperConfidenceBound(model, 0.1, sampler)
 
 ## 3. 最適化
 最適な候補点を決めるため、獲得関数の最大化を行います。
-通常ガウス過程によるベイズ最適化では、この最適化を勾配法で実行することが困難になる（勾配の計算が困難になる）ことがあり、EMA-CS（進化計算）などを用いて局所解を探索していました。しかしBoTorchはモンテカルロ獲得関数を前提として、勾配法による最大化を行います。
+通常ガウス過程によるベイズ最適化では、この最適化を勾配法で実行することが困難になる（勾配の計算が困難になる）ことがあり、CMA-ES（進化計算）などを用いて局所解を探索していました。しかしBoTorchはモンテカルロ獲得関数を前提として、勾配法による最大化を行います。
 
 この最大化=候補点の提案は、`botorch.optim.optimize_acqf`関数によって実行されます。（内部的には`scipy.optimize.minimize`を使用しています。）
 `botorch.optim.optimize_acqf`の主要な引数はそれぞれ以下の通りです。
@@ -326,5 +340,7 @@ candidate, acq_value = optimize_acqf(
 
 # 終わりに
 ごく粗くではありますが、BoTorchの基本機能について解説しました。内容についてご指摘などありましたらコメント頂ければ幸いです。
-モンテカルロ獲得関数の詳細や、（ここでは紹介しなかった）BoTorchに実装されている諸手法については、後日改めて説明記事をかければと思っています。
+~~モンテカルロ獲得関数の詳細や、（ここでは紹介しなかった）BoTorchに実装されている諸手法については、後日改めて説明記事をかければと思っています。~~ 
+[モンテカルロ獲得関数の解説記事](https://qiita.com/narrowlyapplicable/items/3c2c80e05e16fa935cf1)を書きました！まだ続きます。
+
 

@@ -32,19 +32,19 @@ BoTorch関連記事の3本目です。
 このように、評価したい系に **「速度と精度のトレードオフ」を引き起こすパラメータ** があるとき、当該パラメータを ***"fidelity"(忠実度)*** と呼びます。  
 
 一般化のため、表記法を導入しておきます。  
-目的関数$f(x), x\in\mathbb{A}$を、fidelityを持つ$g(x, s)$に拡張することを考えます。ここで、fidelityパラメータが1次元であれば、$s\in[0,1]$は1が最高・0が最低（逆なこともあります）すなわち
-$$f(x) = g(x, 1), \forall x\in\mathbb{A}$$
+目的関数$f(x), x\in\mathbf{A}$を、fidelityを持つ$g(x, s)$に拡張することを考えます。ここで、fidelityパラメータが1次元であれば、$s\in[0,1]$は1が最高・0が最低（逆なこともあります）すなわち
+$$f(x) = g(x, 1), \forall x\in\mathbf{A}$$
 となります。  
 fidelityパラメータが多次元の場合も、
 
 ```math
 \begin{align}
-&f(x) = g(x, \mathbf{1}_m), \forall x \in \mathbb{A}\\
+&f(x) = g(x, \mathbf{1}_m), \forall x \in \mathbf{A}\\
 &\mathbf{s} = (s_1, ..., s_m)\\
 &s_i \in [0,1]
 \end{align}
 ```
-となります。ただし$\mathbf{1}=(1, 1,..., 1\in\mathbb{R}^m)$です。  
+となります。ただし$\mathbf{1}=(1, 1,..., 1)\in\mathbb{R}^m$です。  
 
 - 例として、DNNのハイパーパラメータ調整を考えてみましょう。
   この場合、精度が目的関数$f$に、ハイパーパラメータが入力$x$に当たります。さらにfidelityパラメータ$s$として、学習データ量を変動させる事にします。  
@@ -82,11 +82,46 @@ Mulit-fidelityを用いたBOは2017年ごろから登場し、すでに多くの
 しかし本記事では、より後発の手法でBoTorchに採用されているtaKGに対象を絞ります。
 taKGは性能面での改善の他に、fidelityをエポック数のような連続的なもの（trace fidelity）と、データ数のような非連続的なものに分けることで、1回の試行から最大限の情報を取得できる利点があります。
 また前段階であるcfKGがシンプルで説明しやすいため、Multi-fidelityの入門に向いているという利点もあります。
-次章において、まずKnowledge Gradient獲得関数を導入し、そのMulti-fidelity拡張としてcfKG, taKGについて説明します。そして§3において、taKGのBoTorch実装であるqMultiFidelityKnowledgeGradientを用いた実装について説明します。
+次章において、まずKnowledge Gradient獲得関数を導入し、そのMulti-fidelity拡張としてcfKG, taKGについて説明します。そして§3において、taKGのBoTorch実装である`qMultiFidelityKnowledgeGradient`を用いた実装について説明します。
 
 # 2. Multi-fidelity Knowledge Gradient
 
 ## 2.1. Knowledge Gradient (KG) 獲得関数
+Multi-fidelityによるベイズ最適化（MFBO）の詳細に立ち入る前に、Knowledge Gradient（KG）獲得関数について説明しておきます。
+
+- MFBOでは、KGやEntropy Search系など比較的新しい獲得関数を使う傾向があります。
+  - 代表的な獲得関数であるEI（Expected Improvement）には、$s<1$では使えないという問題があります。[FrazierのTutorial](https://arxiv.org/abs/1807.02811)にある通り、fidelityを変動させた場合$EI=0$となるため、EIはそのままでは使用困難です。[EIをベースにした手法](https://arc.aiaa.org/doi/abs/10.2514/6.2015-0143)も存在しますが、Entropy SearchやKnowledge Gradientは自然にMFBOに拡張できるため、これらをベースにした手法が多いと考えられます。
+- BoTorchでは、ES系のMES（Max-value Entropy Search）とKGをぞれぞれ拡張したMFBO用獲得関数が実装されています。
+
+
+### KGの定義
+EIなど従来の獲得関数が各入力点$x_{new}$での事後分布を評価するのに対し、KGは定義域$\mathbf{A}$全体での事後平均に注目します。
+
+ガウス過程にn点のデータ$D_{1:n}$を与えた事後平均を$\mu_n(x)$とし、その下での最適値を
+
+```math
+\mu^{*}_n:=\min_{x\in\mathbf{A}}{\mu_n(x)}
+```
+
+と表します（最小化問題の場合）。  
+追加の観測として$D_{n+1:n+b} = (x_{n+1}, y_{n+1}), ..., (x_{n+b}, y_{n+b})$を得ると、この値は$\mu_{n+b}^{*}$に更新されます。更新によって生じた改善
+
+```math
+\mu^{*}_n - \mu^{*}_{n+b}
+```
+
+が、新規観測点$D_{n+1:n+b}$から得られる情報量です。
+しかしこの
+
+```math
+KG_n(x) = \mathbb{E}[\mu^{*}_n - \mu^{*}_{n+1} | x_{n+1}=x]
+```
+
+- 論文：[The Knowledge-Gradient Policy for Correlated Normal Beliefs](https://www.researchgate.net/publication/220668798_The_Knowledge-Gradient_Policy_for_Correlated_Normal_Beliefs)
+
+
+上記の論文(Frazier et al. 2009)では、ノイズの多い場合で特に有効とされています。
+
 
 ## 2.2. cfKG
 

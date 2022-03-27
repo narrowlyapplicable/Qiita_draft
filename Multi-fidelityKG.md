@@ -1,5 +1,5 @@
 ---
-title: [BoTorch]Multi-fidelityベイズ最適化の基礎と実装
+title: [BoTorch]Knowledge GradientによるMulti-fidelityベイズ最適化の基礎と実装
 tags: ベイズ最適化 ガウス過程 BoTorch GPyTorch
 author: narrowlyapplicable
 slide: false
@@ -27,6 +27,7 @@ BoTorch関連記事の3本目です。
 こうした用途では、最適化にかける計算コストや時間（Budgetと呼びます）を抑えたい場合が多くあります。Budgetを抑えながら最適値を探す際に有効な考え方として、Multi-Fidelity(MF)があります。
 本記事では、BoTorchに実装されている`qMultiFidelityKnowledgeGradient`獲得関数を例に、Multi-fidelityの基礎を解説することを目的とします。
 
+使い方だけを知りたい場合は、公式のTutorialを参照することをお勧めします。
 
 # 1. Multi-fidelity
 
@@ -118,7 +119,7 @@ EIなど従来の獲得関数が各入力点$x_{new}$での事後分布を評価
 ```
 
 が、追加観測$D_{n+1:n+q}$から得られる情報量です。
-この情報量の期待値
+この情報利得の期待値
 
 ```math
 KG_n(\mathbf{x}) = \mathbb{E}[\tau_n - \tau_{n+q} | (x_{n+1},...,x_{n+q})=\mathbf{x}]
@@ -144,23 +145,34 @@ y_c \sim p(y|x_c, D_{1:n})
 
 ```math
 \begin{align}
-KG_n(x) &= \mathbb{E}[\tau_n - \tau_{n+q} | (x_{n+1},...,x_{n+q})=\mathbf{x}] \\ &\approx \frac{1}{M}\sum_{i=1}^M{\tau_n - \tau_{n+1}^{(i)}}
+KG_n(x_c) &= \mathbb{E}[\tau_n - \tau_{n+1} | x_{n+1}=x_c] \\ &\approx \frac{1}{M}\sum_{i=1}^M{\tau_n - \tau_{n+1}^{(i)}}
 \end{align}
 ```
 
+と算出します。
+
 ### KGの直感的理解
-下記サイトでは、KGの定義をグラフを用いて解説しています。図形的に理解したい方（私は苦手ですが……）には特におすすめです。
+下記の記事では、KGの定義をグラフを用いて解説しています。図形的に理解したい方（私は苦手ですが……）には特におすすめです。
 
 - [An Illustrated Guide to the Knowledge Gradient Acquisition Function](https://tiao.io/post/an-illustrated-guide-to-the-knowledge-gradient-acquisition-function/)
 
-下記に概要をなぞっておきます。このサイトを読んだ方には不要ですので、次章に進んでください。
+以下に概要をなぞっておきます。上記記事を読んだ方には不要ですので、次章に進んでください。
 
-1. 事後平均の最小値を求める
-   ガウス過程にn点のデータ$D_{1:n}$を与えた事後平均$\mu_n(x)$（図の**赤線**）から、最小値
-2. d
 
 ![KGの概念図](https://tiao.io/post/an-illustrated-guide-to-the-knowledge-gradient-acquisition-function/figures/simulated_predictive_minimum_paper_1800x1112_hu7ec744289dc49707e373c59bb5b5f9b8_185466_2000x2000_fit_lanczos_2.png)
 出典：[An Illustrated Guide to the Knowledge Gradient Acquisition Function](https://tiao.io/post/an-illustrated-guide-to-the-knowledge-gradient-acquisition-function/)
+
+
+1. 事後平均の最小値を求める
+   ガウス過程にn点のデータ$D_{1:n}$を与えた事後平均$\mu_n(x)$（上図の**赤線**）から、最小値$\tau_n$（上図の**赤い★**）を求めます。
+2. 候補点 $x_c$ における評価 $y_c$ をサンプリング
+   GP事後分布から$\set{y_c^{(i)}}_i^M$をサンプリングします。上図では1点だけサンプリングしており、**青●**が$y_c^{(1)}$を示しています。
+3. 更新後の最小値$\tau_{n+1}$を取得
+   データセットに$(x_c, y_c)$を加えてGPのハイパーパラメータを再学習し、更新後の事後平均（上図の**青線**）から最小値$\tau_{n+1}$（上図の**青い★**）を求めます。
+4. KGのモンテカルロ近似計算
+   2.で得たサンプル$\set{y_c^{(i)}}$の各々について3.を繰り返し、更新後事後平均のサンプル$\set{\mu_{n+1}^{(i)}}$（**下図の緑〜青線**）を得ます。さらに事後平均の最小値サンプル$\set{\tau_{n+1}^{(i)}}$（**下図の破線**）を求め、KGのモンテカルロ近似を得ます。
+
+![KGの概念図２](https://tiao.io/post/an-illustrated-guide-to-the-knowledge-gradient-acquisition-function/figures/baz_paper_1800x1112_hu67258cce70ae8f4488aa04d9a0dd9fdb_242809_2000x2000_fit_lanczos_2.png)
 
 ### KGの特徴
 [Frazier et al. 2009](https://www.researchgate.net/publication/220668798_The_Knowledge-Gradient_Policy_for_Correlated_Normal_Beliefs)では、ノイズの多い場合で特に有効とされています。
@@ -175,13 +187,54 @@ cfKG（Continous-Fidelity KG）は、その中でも比較的素直な拡張で�
 
 - cfKG元論文：[Continuous-Fidelity Bayesian Optimization with Knowledge Gradient](https://bayesopt.github.io/papers/2017/20.pdf)
 
-### cfKGの定義
-cfKGの基本は、通常の獲得関数値（ここではKG）を評価コスト（の推定値）で割り、探索の費用対効果を考慮するというものです。
+cfKGの基本となる考え方は、通常のKGを評価コスト（の推定値）で割り、探索の費用対効果を考慮するというものです。
 
+### 前提となるモデル
 MFでは通常の入力 $x$ にfidelity $s$ が加わるため、探索する変数が $(x, s)$ に増えます。つまり定義域$\mathbf{A}$ と fidelityの取りうる範囲 $[0,1]^m$ から、探索空間は $\mathbf{A}\times[0,1]^m$ となります。
 この探索空間から出力$y$を推定するGPモデル1と、同探索空間から評価コストを推定する別のGPモデル2、の２種が必要になります。  
 
 ![図1](./graph/Multi-fidelityKG図1.png)
+
+またカーネルも$\set{\mathbf{A}\times [0,1]^m}\times\set{\mathbf{A}\times[0,1]^m}\mapsto\mathbb{R}$とする必要があります。
+
+### cfKGの定義
+探索空間にfidelityが加わったため、獲得関数で評価すべき候補点は、入力候補点とfidelity候補点の組 $(x_c, s_c)$ となります。
+
+この候補点$(x_c, s_c)$ による情報の利得は、fidelity=1での最小値がどの程度小さくなるか、で定義します。
+すなわちfidelity付きGPの事後平均 $\mu_n(x, s)$ に対して
+
+```math
+\begin{align}
+\tau_n &= \min_{x\in\mathbf{A}}{\mu_n(x, \mathbf{1})} \\
+\tau_{n+1}^{(i)} &= \min_{x\in\mathbf{A}}{\mu_{n+1}^{(i)}(x, \mathbf{1})} \\
+\end{align}
+```
+
+とし、差分 $\tau_n - \tau_{n+1}^{(i)}$ を候補点 $\bigl((x_c, s_c), y_c^{(i)}\bigr)$ による情報利得とします。  
+
+通常の KGであれば情報利得の期待値
+
+```math
+KG_n(x,s) \approx \frac{1}{M}\sum_{i=1}^M{\tau_n - \tau_{n+1}^{(i)}}
+```
+
+を取りますが、cfKGはこの期待値を評価コスト$cost_n(x, s)$で割ります。
+
+```math
+\begin{align}
+cfKG_n(x_c, s_c) &= \frac{\mathbb{E}[\tau_n - \tau_{n+1} | x_{n+1}=x_c, s_{n+1}=s_c]}{cost_n(x_c,s_c)} \\ &\approx \frac{1}{M}\sum_{i=1}^M{\tau_n - \tau_{n+1}^{(i)}} \quad.
+\end{align} 
+```
+
+この評価コストは、別のGPモデルで推定した値です。
+これにより、評価コストと情報利得のトレードオフを考慮した候補点を選ぶことができます。
+
+### cfKGの問題点
+cfKGの大きな弱点として、評価コストが非常に小さくなると分母が0に近づくため、分子＝情報利得がほぼ０の候補点を選択しやすくなる性質があります。$s=0$付近に嵌まってしまうと、Budgetの大半をほぼ情報のない探索に費やすこともあります。これはcfKG特有の問題ではなく、FABOLASやESベースの類似手法でも生じる普遍的なものです。
+対策としては、分母である評価コストに小さな固定値を足し込む・fidelityが$s\fallingdotseq0$での評価コストに罰則を付ける、といったものがあります。ただし固定値や罰則の付け方などは問題ごとに設定する必要があります。
+
+また、DNNにおけるエポック数のように「途中経過」があるfidelityの場合、その情報を有効活用できないという問題もあります。
+cfKGはfidelityを単一の値と見なしますが、エポック数がNの場合、fidelity $s=N$での評価$g(x, N)$だけでなく、 $s=1,2, ..., N−1$の結果も一括で得ることができます。このN通りの結果を活用するのが、次に紹介するtaKG（trace-aware KG）です。
 
 ## 2.3. taKG
 

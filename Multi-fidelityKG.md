@@ -181,13 +181,13 @@ KG_n(x_c) &= \mathbb{E}[\tau_n - \tau_{n+1} | x_{n+1}=x_c] \\ &\approx \frac{1}{
 https://sigopt.com/blog/expected-improvement-vs-knowledge-gradient/
 ![](https://sigopt.com/wp-content/uploads/2017/04/Expected-Improvement-vs.-Knowledge-Gradient-Figure-5.png)
 
-## 2.2. cfKG
+## 2.2. cfKG（Continous-Fidelity KG）
 KGをMulti-fidelityに拡張します。
 cfKG（Continous-Fidelity KG）は、その中でも比較的素直な拡張です。
 
 - cfKG元論文：[Continuous-Fidelity Bayesian Optimization with Knowledge Gradient](https://bayesopt.github.io/papers/2017/20.pdf)
 
-cfKGの基本となる考え方は、通常のKGを評価コスト（の推定値）で割り、探索の費用対効果を考慮するというものです。
+cfKGの基本となる考え方は、*通常のKGを評価コスト（の推定値）で割り、探索の費用対効果を考慮する*というものです。
 
 ### 前提となるモデル
 MFでは通常の入力 $x$ にfidelity $s$ が加わるため、探索する変数が $(x, s)$ に増えます。つまり定義域$\mathbf{A}$ と fidelityの取りうる範囲 $[0,1]^m$ から、探索空間は $\mathbf{A}\times[0,1]^m$ となります。
@@ -218,7 +218,7 @@ MFでは通常の入力 $x$ にfidelity $s$ が加わるため、探索する変
 KG_n(x,s) \approx \frac{1}{M}\sum_{i=1}^M{\tau_n - \tau_{n+1}^{(i)}}
 ```
 
-を取りますが、cfKGはこの期待値を評価コスト$cost_n(x, s)$で割ります。
+を取りますが、cfKGはこの期待値を**評価コスト$cost_n(x, s)$で割ります**。
 
 ```math
 \begin{align}
@@ -226,17 +226,71 @@ cfKG_n(x_c, s_c) &= \frac{\mathbb{E}[\tau_n - \tau_{n+1} | x_{n+1}=x_c, s_{n+1}=
 \end{align} 
 ```
 
-この評価コストは、別のGPモデルで推定した値です。
+分母の評価コスト $cost_n()$ は、別のGPモデルで推定した値です。
+
 これにより、評価コストと情報利得のトレードオフを考慮した候補点を選ぶことができます。
+cfKGが最大となる入力とfidelityの組$(x, s)$を選択し、次の評価対象とします。この$(x, s)$は（推定）評価コスト当たりの情報利得が最も大きくなるため、評価コストを抑えながら効率よく最適化を進められると考えられます。
+
+### Parallel Selectionへの拡張
+同時に複数点を選ぶParallel Selectionに拡張をすることを考えます。
+
+通常の入力変数 $x$ とfidelity $s$ の組を $z=(x, s)$と表記します。
+同様に$$z_i := (x_i, s_i), \\z^{1:q} := \set{(x_1, s_1), ..., (x_q, s_q)},$$ として、候補点 $z_c^{1:q} = \set{(x_{c1}, s_{c1}), ..., (x_{cq}, s_{cq})}$に対する獲得関数値は
+
+```math
+\begin{align}
+q\text{-}cfKG(z_c^{1:q}) &= \frac{\mathbb{E}[\tau_n - \tau_{n+1} | z^{1:q}=z_c^{1:q}]}{\max_{1\leq i \leq q}{cost_n(x_{ci}, s_{ci})}} \\
+
+\end{align}
+```
+
+分母（評価コスト）は、新規評価点 $z_c^{1:q}$ の最大値としています。これは評価が並列に実行されるとすれば、全体の所要時間は最大値に一致するためです。
+分子に大きな変更はなく、評価点が多数の場合のKGです。
 
 ### cfKGの問題点
-cfKGの大きな弱点として、評価コストが非常に小さくなると分母が0に近づくため、分子＝情報利得がほぼ０の候補点を選択しやすくなる性質があります。$s=0$付近に嵌まってしまうと、Budgetの大半をほぼ情報のない探索に費やすこともあります。これはcfKG特有の問題ではなく、FABOLASやESベースの類似手法でも生じる普遍的なものです。
+cfKGの大きな弱点として、評価コストが非常に小さくなると分母が0に近づくため、分子＝**情報利得がほぼ０の候補点を選択しやすくなる**性質があります。$s=0$付近に嵌まってしまうと、Budgetの大半をほぼ情報のない探索に費やすこともあります。これはcfKG特有の問題ではなく、FABOLASやESベースの類似手法でも生じる普遍的なものです。
 対策としては、分母である評価コストに小さな固定値を足し込む・fidelityが$s\fallingdotseq0$での評価コストに罰則を付ける、といったものがあります。ただし固定値や罰則の付け方などは問題ごとに設定する必要があります。
 
-また、DNNにおけるエポック数のように「途中経過」があるfidelityの場合、その情報を有効活用できないという問題もあります。
+また、DNNにおけるエポック数のように **「途中経過」があるfidelityの情報を有効活用できない**という問題もあります。
 cfKGはfidelityを単一の値と見なしますが、エポック数がNの場合、fidelity $s=N$での評価$g(x, N)$だけでなく、 $s=1,2, ..., N−1$の結果も一括で得ることができます。このN通りの結果を活用するのが、次に紹介するtaKG（trace-aware KG）です。
 
-## 2.3. taKG
+## 2.3. taKG（trace-aware KG）
+### trace & non-trace fidelity
+fidelityを2種類に分け、エポック数のように複数fidelityでの評価を一括で得られるもの（trace fidelity）と、学習データ量のように単一fildelityでの評価しか得られないもの（non-trace fidelity）とを考えます。
+
+例えばエポック数を $s_1$ としたとき、エポック数 $[0, s_1]$ での結果を一括で得ることができます。このようなfidelityパラメータを**trace fidelity**と呼びます。
+一方学習データ量を $s_2$ とすると、$s_2$以外での結果は取得できず、別途取得し直す必要があります。このようなfidelityパラメータを**non-trace fidelity**と呼びます。
+
+![trace-fidelity](./graph/Multi-fidelityKG図2.png)
+
+cfKGでは、trace fidelity $s_1$ の情報を有効に活用できていません。$[0,s_1]$ での評価を一括で得られるにも関わらず、cfKGでは1点$s_1$しか参照しません。
+そこで、*trace fidelityとnon-trace fidelityの扱いを分けて、trace fidelityの情報を活用するのがtaKG*です。
+
+同時に観測できるfidelityの組は、$[0, s]$ と $\set{s}$ の形の直積となります。
+fidelity $\mathbf{s}=(s_1, s_2)$ について、$s_1$がtrace、$s_2$がnon-trace fidelityであった場合、新規点 $\bigl(x, (s_1, s_2)\bigr)$ を評価することで
+
+$$B(\mathbb{\mathbf{s}}) = [0, s_1] \times \set{s_2}$$
+
+の評価結果を同時に得ることになります。
+
+### taKG
+taKGはcfKGの拡張であり、trace fidelityに対応した修正を加えたものです。
+
+まずtrace fidelityにおける複数の評価結果を扱う表記法を導入します。
+１度に観測できるfidelityが1点ではなく、集合を $\mathcal{S}\subset B(\mathbf{s})$ であるとします。
+具体的には、次期評価対象を$(x_c, \mathcal{S})$とすれば、$\forall s \in \mathcal{S}$ での目的関数値 $g(x_c, s)$をまとめて取得できます。この結果をまとめて
+
+```math
+\mathcal{Y}(x_c, \mathcal{S}) = \set{g(x_c, s) | s \in \mathcal{S}}
+```
+
+とします。これは、上図で言えば赤い↔︎の範囲を評価した結果にあたります。
+
+この表記を用いて、cfKGの分子・分母を修正していきます。
+
+
+
+
 
 # 3. BoTorch実装
 

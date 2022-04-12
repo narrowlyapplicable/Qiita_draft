@@ -25,9 +25,9 @@ BoTorch関連記事の3本目です。
 ベイズ最適化をはじめとしたBlack Box最適化は、評価（＝目的関数値の取得）が容易でない対象での最適化に威力を発揮します。シミュレーションであれば計算コストが高い、実験であれば長時間を要する、といった状況です。代表的な適用先である深層学習のハイパーパラメータ調整も、やはり1回の学習に多大な計算コストを要するexpensiveな例です。  
 
 こうした用途では、最適化にかける計算コストや時間（Budgetと呼びます）を抑えたい場合が多くあります。Budgetを抑えながら最適値を探す際に有効な考え方として、Multi-Fidelity(MF)があります。
-本記事では、BoTorchに実装されている`qMultiFidelityKnowledgeGradient`獲得関数を例に、Multi-fidelityの基礎を解説することを目的とします。
+本記事では、BoTorchに実装されている[`qMultiFidelityKnowledgeGradient`](https://botorch.org/api/acquisition.html#botorch.acquisition.knowledge_gradient.qMultiFidelityKnowledgeGradient)獲得関数を例に、Multi-fidelityの基礎を解説することを目的とします。
 
-使い方だけを知りたい場合は、公式のTutorialを参照することをお勧めします。
+使い方だけを知りたい場合は、[公式のTutorial](https://botorch.org/tutorials/multi_fidelity_bo)を参照することをお勧めします。
 
 # 1. Multi-fidelity
 
@@ -255,7 +255,7 @@ cfKGの大きな弱点として、評価コストが非常に小さくなると�
 cfKGはfidelityを単一の値と見なしますが、エポック数がNの場合、fidelity $s=N$での評価$g(x, N)$だけでなく、 $s=1,2, ..., N−1$の結果も一括で得ることができます。このN通りの結果を活用するのが、次に紹介するtaKG（trace-aware KG）です。
 
 ## 2.3. taKG（trace-aware KG）
-### trace & non-trace fidelity
+### 2.3.1. trace & non-trace fidelity
 fidelityを2種類に分け、エポック数のように複数fidelityでの評価を一括で得られるもの（trace fidelity）と、学習データ量のように単一fildelityでの評価しか得られないもの（non-trace fidelity）とを考えます。
 
 例えばエポック数を $s_1$ としたとき、エポック数 $[0, s_1]$ での結果を一括で得ることができます。このようなfidelityパラメータを**trace fidelity**と呼びます。
@@ -273,7 +273,7 @@ $$B(\mathbb{\mathbf{s}}) = [0, s_1] \times \set{s_2}$$
 
 の評価結果を同時に得ることになります。
 
-### taKG
+### 2.3.2. taKG
 taKGはcfKGの拡張であり、trace fidelityに対応した修正を加えたものです。
 
 まずtrace fidelityにおける複数の評価結果を扱う表記法を導入します。
@@ -289,12 +289,122 @@ taKGはcfKGの拡張であり、trace fidelityに対応した修正を加えた�
 この表記を用いて、cfKGの分子・分母を修正していきます。
 
 
+### 2.3.3. taKG$^\empty$
 
 
+### 2.3.4. fidelityのカーネル
 
 # 3. BoTorch実装
+BoTorchのMulti-fidelity KG実装は[`qMultiFidelityKnowledgeGradient`](https://botorch.org/api/acquisition.html#botorch.acquisition.knowledge_gradient.qMultiFidelityKnowledgeGradient)です。
+その使い方も、[公式のTutorial](https://botorch.org/tutorials/multi_fidelity_bo)に例が示されています。このTutorialを完全に理解できるのであれば、使い方については以下を読む必要はありません。
 
-- 獲得関数：qMFKG
-- GPモデルも、Multi-fidelity専用のモデルを用いる必要がある。これは入力と別にfidelityについてもカーネルを作る必要があるため。
-  - [SingleTaskMultiFidelityGP](https://botorch.org/api/models.html#botorch.models.gp_regression_fidelity.SingleTaskMultiFidelityGP)：通常の`SingleTaskGP`のMulti-fidelity版
-  - `_setup_multifidelity_covar_module`でfidelityのカーネルを追加している。
+## 3.1. GPモデル
+Tutorialのモデル定義は下記の関数でなされています。
+
+```py :multi_fidelity_bo
+def initialize_model(train_x, train_obj):
+    # define a surrogate model suited for a "training data"-like fidelity parameter
+    # in dimension 6, as in [2]
+    model = SingleTaskMultiFidelityGP(
+        train_x, 
+        train_obj, 
+        outcome_transform=Standardize(m=1), ##出力を正規化
+        data_fidelity=6                     ##入力の第6次元がnon-trace fidelity.
+    )   
+    mll = ExactMarginalLogLikelihood(model.likelihood, model)
+    return mll, model
+```
+
+- GPモデルが通常の`SingleTaskGP`ではなく、[`SingleTaskMultiFidelityGP`](https://botorch.org/api/models.html#botorch.models.gp_regression_fidelity.SingleTaskMultiFidelityGP)になっています。
+  - これは通常の`SingleTaskGP`のMulti-fidelity版であり、カーネルが上述のfidelity対応版に拡張されています。
+  - `data fidelity`と呼ばれている引数でnon-trace fidelityを指定します。入力Tensorの対応する列番号を引数として与えれば、この列のデータは**non-trace fidelity**として扱われ、ガウス過程においては通常`DownsamplingKernel`への入力となります。
+  - この例では使われていないものの、`iteration_fidelity`引数によって**trace fidelity**を指定できます。こちらは通常`ExponentialDecayKernel`が適用されます。
+- 内部的には、[`_setup_multifidelity_covar_module`](https://github.com/pytorch/botorch/blob/v0.6.3.1/botorch/models/gp_regression_fidelity.py#L261)でfidelityのカーネル(§2.3.4.参照)を追加しています。
+  - 通常の入力に対するカーネルはRBF固定です。ただし引数`linear_truncated`引数をTrueとした場合は、全体に`LinearTruncatedFidelityKernel`が適用され、入力部分は`nu`引数で指定した滑らかさのMaternカーネルに変更となります。
+```py :gp_regression_fidelity.py
+        kernel = RBFKernel(
+            ard_num_dims=len(active_dimsX),
+            batch_shape=aug_batch_shape,
+            lengthscale_prior=GammaPrior(3.0, 6.0),
+            active_dims=active_dimsX,
+        )
+        additional_kernels = []
+        if iteration_fidelity is not None:
+            exp_kernel = ExponentialDecayKernel(
+                batch_shape=aug_batch_shape,
+                lengthscale_prior=GammaPrior(3.0, 6.0),
+                offset_prior=GammaPrior(3.0, 6.0),
+                power_prior=GammaPrior(3.0, 6.0),
+                active_dims=[iteration_fidelity],
+            )
+            additional_kernels.append(exp_kernel)
+        if data_fidelity is not None:
+            ds_kernel = DownsamplingKernel(
+                batch_shape=aug_batch_shape,
+                offset_prior=GammaPrior(3.0, 6.0),
+                power_prior=GammaPrior(3.0, 6.0),
+                active_dims=[data_fidelity],
+            )
+            additional_kernels.append(ds_kernel)
+        kernel = ProductKernel(kernel, *additional_kernels)
+```
+
+## 3.2. 獲得関数
+Tutorialで獲得関数の定義部分は以下の通りです。
+
+```py :multi_fidelity_bo
+bounds = torch.tensor([[0.0] * problem.dim, [1.0] * problem.dim], **tkwargs)
+target_fidelities = {6: 1.0} ## 本来の(最適化対象である)fidelityの列番号と値
+
+cost_model = AffineFidelityCostModel(fidelity_weights={6: 1.0}, fixed_cost=5.0)
+cost_aware_utility = InverseCostWeightedUtility(cost_model=cost_model)
+## (獲得関数値を)測定コストで割るよう指定
+
+def project(X): ## Design Point を本来のfidelityに移動させる関数
+    return project_to_target_fidelity(X=X, target_fidelities=target_fidelities)
+
+
+def get_mfkg(model):
+    
+    curr_val_acqf = FixedFeatureAcquisitionFunction(
+        acq_function=PosteriorMean(model),
+        d=7,
+        columns=[6],
+        values=[1],
+    )
+    
+    _, current_value = optimize_acqf(
+        acq_function=curr_val_acqf,
+        bounds=bounds[:,:-1],
+        q=1,
+        num_restarts=10 if not SMOKE_TEST else 2,
+        raw_samples=1024 if not SMOKE_TEST else 4,
+        options={"batch_limit": 10, "maxiter": 200},
+    )
+        
+    return qMultiFidelityKnowledgeGradient(
+        model=model,
+        num_fantasies=128 if not SMOKE_TEST else 2,
+        current_value=current_value,
+        cost_aware_utility=cost_aware_utility,
+        project=project,
+    )
+```
+
+- １行目：探索範囲を`bounds`として定義
+- ２行目：最適化対象となる本来のfidelityについて、列番号(6)と値(1.0)をdictで指定
+- ４〜５行目：取得コストのモデルを`AffineFidelityCostModel`で定義
+  - f
+- `project()`：候補点$(x, s)$を$(x, 1)$に書き換える（だけの）関数。獲得関数定義時に引数として与えます。
+- `get_mfkg()`：獲得関数を定義します。
+  - まず現状での事後平均$\mu_n(x, s)$ に対して、fidelity=１での最小値
+
+    ```math
+    \tau_n = \min_{x\in\mathbf{A}}{\mu_n(x, \mathbf{1})} 
+    ```
+
+    を求めます。
+    - [`FixedFeatureAcquisitionFunction`](https://botorch.org/api/acquisition.html#botorch.acquisition.fixed_feature.FixedFeatureAcquisitionFunction)は、特定の入力特徴量を固定するために用いるWrapperです。通常、第３引数の特徴量を第４引数の値に固定した状態で、第１引数の獲得関数値を最適化するために用います（第２引数は入力次元数です）。
+    - この`FixedFeatureAcquisitionFunction`を用いて、事後平均`PosteriorMean`を最適化する（擬似）獲得関数`curr_val_acqf`を定義します。ここでfidelityのある`columns=[6]`を`values=[1]`に固定し、fidelity=1での最小値するよう設定しています。
+    - （擬似）獲得関数`curr_val_acqf`を`optimize_acqf`に与え、$\tau_n$に当たる事後平均最小値`current_value`を求めます。
+  - MF獲得関数`qMultiFidelityKnowledgeGradient`を定義し、返します。
